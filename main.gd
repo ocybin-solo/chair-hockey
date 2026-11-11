@@ -100,7 +100,7 @@ const SAVED_OPTIONS: Array = [
 	{"name": "serve_mode_loser_gets_it"},
 	{"name": "fx_strength", "min": 0.0, "max": 1.0},
 ]
-
+const TEST = 0
 const MALLET_FX_IDLE: float = 0.3   # Ripple strength on a resting mallet during play (0 = only when moving)
 const FX_FULL_SPEED: float = 2000.0   # Mallet speed (px/sec) that gives the strongest ripples
 var fx_strength: float = 0.2        # Ripple effect brightness. 0 = off
