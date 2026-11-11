@@ -5,8 +5,8 @@ extends Node2D
 var puck_bounciness: float = 1.0
 var puck_max_speed: float = 1800.0  # px/sec. Hard speed cap AND scales how hard hits are (see apply_mallet_impact_force)
 var score_limit: int = 7
-var mallet_radius: float = 43.0
-var puck_radius: float = 34.0
+var mallet_radius: float = 40.0
+var puck_radius: float = 30.0
 var goal_frac_p1: float = 1.0 / 3.0   # Player 1's goal opening (bottom net) as a fraction of screen width
 var goal_frac_p2: float = 1.0 / 3.0   # Player 2's goal opening (top net)
 var tracer_interval: float = 0.03   # Seconds between echoes (echoes x this = trail length)
@@ -22,7 +22,7 @@ var color_lines: Color = Color("ffffffff") # Rink lines color configuration
 var serve_mode_loser_gets_it: bool = true # Toggle: true = Loser gets it, false = Make it take it
 
 # --- TUNING CONSTANTS ---
-const MAX_MALLET_SPEED: float = 2500.0   # px/sec cap on mallet movement, so a far-away finger can't ram a pinned puck
+const MAX_MALLET_SPEED: float = 2000.0   # px/sec cap on mallet movement, so a far-away finger can't ram a pinned puck
 
 const SLIDE_DAMP: float = .5          # Higher = a released mallet stops sooner
 const SLIDE_BOUNCE: float = 1000.1        # Speed kept when a sliding mallet hits a wall or line
@@ -31,9 +31,9 @@ const FLICK_SMOOTHING: float = 95.0    # Higher = throw speed reflects only the 
 const MAX_SLIDE_SPEED: float = 1500.0  # Cap on throw speed
 
 const COUNTDOWN_STEP: float = 0.6             # Seconds per countdown number
-const WALL_THICKNESS: float = 200.0           # Walls are thick so the puck can never be squeezed or tunnel through
+const WALL_THICKNESS: float = 300.0           # Walls are thick so the puck can never be squeezed or tunnel through
 const FLIP_TOP_PLAYER_TEXT: bool = true       # Top player's score and Win/Lose text are rotated 180 so they face that player
-const UI_ROW_HEIGHT: float = 44.0             # Minimum height of menu buttons and option rows (finger friendly)
+const UI_ROW_HEIGHT: float = 50.0             # Minimum height of menu buttons and option rows (finger friendly)
 const SCORE_LABEL_SIZE: Vector2 = Vector2(120, 60)
 const SCORE_MARGIN_X: float = 35.0            # Distance of the score from the screen edge
 const SCORE_GAP_FROM_CENTER: float = 40.0     # Distance of the score from the center line
@@ -41,10 +41,10 @@ const SCORE_GAP_FROM_CENTER: float = 40.0     # Distance of the score from the c
 const PUCK_FRICTION: float = 0.1              # Surface grip. Spin only transfers on contact if this is above ~0 (it was 0.01 while spin was off)
 const PUCK_ANGULAR_DAMP: float = 0.3          # How quickly spin dies out (higher = stops spinning sooner)
 
-const MAX_PUCK_SPIN: float = 50.0             # Spin cap in radians/sec (about 4 turns per second)
-const CORNER_ARC_SEGMENTS: int = 20   # More = smoother curve (and smoother bounces)
+const MAX_PUCK_SPIN: float = 150.0             # Spin cap in radians/sec (about 4 turns per second)
+const CORNER_ARC_SEGMENTS: int = 40   # More = smoother curve (and smoother bounces)
 
-var corner_radius: float = 160.0       # Rounded table corners. 0 = square
+var corner_radius: float = 90.0       # Rounded table corners. 0 = square
 var corner_colliders: Array[CollisionPolygon2D] = []
 var corner_fills: Array[Polygon2D] = []
 var corner_lines: Array[Line2D] = []
@@ -99,10 +99,13 @@ const SAVED_OPTIONS: Array = [
 	{"name": "color_p2"},
 	{"name": "serve_mode_loser_gets_it"},
 	{"name": "fx_strength", "min": 0.0, "max": 1.0},
+	{"name": "ai_enabled"},
+	{"name": "ai_level", "min": 0, "max": 2},
+	
 ]
 const TEST = 0
 const MALLET_FX_IDLE: float = 0.3   # Ripple strength on a resting mallet during play (0 = only when moving)
-const FX_FULL_SPEED: float = 2000.0   # Mallet speed (px/sec) that gives the strongest ripples
+const FX_FULL_SPEED: float = 200.0   # Mallet speed (px/sec) that gives the strongest ripples
 var fx_strength: float = 0.2        # Ripple effect brightness. 0 = off
 var fx_rect: ColorRect
 var fx_mat: ShaderMaterial
@@ -200,11 +203,15 @@ func _ready() -> void:
 	get_tree().quit_on_go_back = false
 	capture_option_defaults()
 	load_options()
+	apply_ai_level()
 	RenderingServer.set_default_clear_color(Color.BLACK)
 	setup_audio()
 	screen_height_half = get_viewport_rect().size.y / 2.0
 	
 	setup_ui_layer()
+	ai_debug_draw = AIDebugDraw.new()
+	ai_debug_draw.z_index = 100
+	add_child(ai_debug_draw)
 	# Build the table right away so it shows behind the menus and option changes are visible
 	build_board()
 	get_viewport().size_changed.connect(_on_viewport_resized)
@@ -282,6 +289,7 @@ func _input(event: InputEvent) -> void:
 
 # A touch anywhere on a player's half grabs that player's mallet
 func try_grab(is_p1: bool, index: int, pos: Vector2) -> void:
+	if ai_enabled and is_p1 == ai_is_p1: return
 	if not game_active: return
 	var rig: MalletRig = rig1 if is_p1 else rig2
 	if rig == null or not is_instance_valid(rig.mallet): return
@@ -345,11 +353,14 @@ func bound_mallet_position(pos: Vector2, is_p1: bool) -> Vector2:
 
 func _physics_process(delta: float) -> void:
 	if not game_active: return
+	ai_update(delta)
+	ai_control(delta)
 	drive_rig(rig1, true, delta)
 	drive_rig(rig2, false, delta)
 	limit_puck_speed()
 	contain_puck()
 	check_goal_scoring_conditions()
+
 	if is_instance_valid(puck): puck_prev_velocity = puck.linear_velocity
 
 func drive_rig(rig: MalletRig, is_p1: bool, delta: float) -> void:
@@ -538,6 +549,7 @@ func end_game(p1_won: bool) -> void:
 	p2_touch_index = -1
 	stop_rig(rig1)
 	stop_rig(rig2)
+	ai_clear_plan()
 
 	if is_instance_valid(puck):
 		puck.freeze = true
@@ -577,6 +589,7 @@ func start_new_game() -> void:
 	# Short pause so the physics bodies are registered before the first serve
 	await get_tree().physics_frame
 	reset_puck_serve(randf() > 0.5)
+	ai_clear_plan()
 
 func _on_viewport_resized() -> void:
 	# Re-fit the table if the window size changes while no match is running (e.g. the first frames on a phone)
@@ -1018,6 +1031,13 @@ func setup_ui_layer() -> void:
 	btn_new.custom_minimum_size.y = UI_ROW_HEIGHT
 	btn_new.pressed.connect(self.start_new_game)
 	vbox.add_child(btn_new)
+	
+	btn_opponent = Button.new()
+	btn_opponent.custom_minimum_size.y = UI_ROW_HEIGHT
+	btn_opponent.pressed.connect(self.cycle_opponent)
+	vbox.add_child(btn_opponent)
+	refresh_opponent_button()
+	option_refreshers.append(refresh_opponent_button)
 	
 	var btn_opt = Button.new()
 	btn_opt.text = "Options"
@@ -1475,6 +1495,7 @@ func apply_all_live_options() -> void:
 	get_tree().call_group("tracers", "set_hue_shift", tracer_hue_shift)
 	apply_sfx_volume()
 	apply_options_to_board()
+	apply_ai_settings()
 
 func show_main_menu() -> void:
 	menu_container.visible = true
@@ -1670,7 +1691,8 @@ func apply_fx_look() -> void:
 
 func _process(delta: float) -> void:
 	update_fx(delta)
-
+	if is_instance_valid(ai_debug_draw): ai_debug_draw.visible = AI_DEBUG and game_active
+	
 func update_fx(delta: float) -> void:
 	if not is_instance_valid(fx_mat) or delta <= 0.0: return
 	if not is_instance_valid(mallet1) or not is_instance_valid(mallet2): return
@@ -1844,3 +1866,733 @@ func bound_to_corners(pos: Vector2, is_p1: bool) -> Vector2:
 		if d.x * sx < 0.0 and d.y * sy < 0.0 and d.length() > reach:
 			pos = c + d.normalized() * reach
 	return pos
+	
+# --- AI TUNING ---
+const AI_DEBUG: bool = false
+const AI_PREDICT_TIME: float = 2.5          # seconds of puck future to simulate
+const AI_PREDICT_STEP: float = 1.0 / 60.0
+const AI_MAX_BOUNCES: int = 4               # most side-wall bounces a shot may use
+var AI_SHOT_SPEED: float = 1300.0         # desired puck speed after the strike (auto-reduced if the mallet can't manage it)
+const AI_MIN_LEAD_TIME: float = 0.12        # a strike must be at least this far in the future (reaction time)
+const AI_RUNUP: float = 90.0                # distance the mallet gets to build up speed along the strike line
+var AI_REACH_SPEED: float = 1000.0   # was 1800
+var AI_REACT_TIME: float = 0.15      # delay before the mallet starts moving
+const AI_TIME_SAFETY: float = 1.25     # travel must fit with 25% to spare
+const AI_MAX_STRIKE_SPEED: float = 2200.0   # fastest mallet speed allowed at the moment of contact (keep under MAX_MALLET_SPEED)
+const AI_GOAL_MARGIN: float = 8.0           # extra clearance from the goal posts, in pixels
+const AI_AIM_SPREAD: float = 0.6            # 0 = always aim at goal center, 1 = anywhere in the safe opening
+const AI_REPLAN_VEL_ERROR: float = 80.0     # puck velocity differs from the prediction by this much -> full re-plan
+const AI_REPLAN_MAX_AGE: float = 0.25       # otherwise refresh the plan this often (keeps the same shot type)
+const AI_BLOCK_MARGIN: float = 25.0    # extra gap beyond the physical minimum before a shot counts as blocked
+const AI_CLEAR_FULL: float = 250.0     # at this distance from your mallet a shot gets its full weight
+var ai_awareness: float = 1.0          # 0 = ignores your mallet when choosing, 1 = strongly prefers clear shots 
+
+# Weight per bounce count (index = bounces; shots with the same bounce count share that weight).
+# If a tier has no valid shot its weight is simply redistributed to the tiers that do.
+const SHOT_WEIGHTS: Dictionary = {
+	"hard":   [50.0, 30.0, 12.0, 5.0, 3.0],
+	"medium": [25.0, 25.0, 25.0, 15.0, 10.0],
+	"easy":   [5.0, 10.0, 20.0, 30.0, 35.0],
+}
+ 
+# --- AI STATE ---
+var ai_is_p1: bool = false            # false = the AI plays the top player (Player 2)
+var ai_difficulty: String = "medium"  # "easy" / "medium" / "hard"
+var ai_path: Array = []               # predicted puck samples: {t, pos, vel}
+var ai_shots: Array = []              # every valid shot found
+var ai_chosen: Dictionary = {}        # the shot picked from ai_shots
+var ai_plan_age: float = 0.0
+var ai_debug_draw: AIDebugDraw
+ 
+func ai_clear_plan() -> void:
+	ai_path.clear()
+	ai_shots.clear()
+	ai_chosen = {}
+	ai_plan_age = 0.0
+	if is_instance_valid(ai_debug_draw): ai_debug_draw.clear()
+	ai_reset_controller()
+	
+func ai_route_clear(path: Array, m0: Vector2, windup: Vector2, t_hit: float) -> bool:
+	var dist: float = m0.distance_to(windup)
+	var dir: Vector2 = (windup - m0) / maxf(dist, 0.001)
+	var clear: float = mallet_radius + puck_radius + 10.0
+	for smp in path:
+		var ts: float = smp["t"]
+		if ts > t_hit: break
+		var travelled: float = clampf((ts - AI_REACT_TIME) * AI_REACH_SPEED, 0.0, dist)
+		if (m0 + dir * travelled).distance_to(smp["pos"]) < clear: return false
+	return true
+
+# Closest distance from a point to a shot's path (a polyline of points)
+func ai_path_clearance(pts: Array[Vector2], from: Vector2) -> float:
+	var best: float = INF
+	for i in range(pts.size() - 1):
+		var cp: Vector2 = Geometry2D.get_closest_point_to_segment(from, pts[i], pts[i + 1])
+		best = minf(best, from.distance_to(cp))
+	return best
+
+func ai_opponent_mallet() -> RigidBody2D:
+	return mallet1 if not ai_is_p1 else mallet2
+ 
+# Called every physics frame while a match runs
+func ai_update(delta: float) -> void:
+	if not (AI_DEBUG or ai_enabled): return
+	if not puck_live or not is_instance_valid(puck):
+		if not ai_path.is_empty(): ai_clear_plan()
+		return
+	ai_plan_age += delta
+	if ai_path.is_empty():
+		ai_make_plan(true)
+		return
+	# Has the puck done something the prediction didn't expect (a mallet hit)? Then start over.
+	var idx: int = mini(int(ai_plan_age / AI_PREDICT_STEP), ai_path.size() - 1)
+	var expected: Vector2 = ai_path[idx]["vel"]
+	if (puck.linear_velocity - expected).length() > AI_REPLAN_VEL_ERROR:
+		ai_make_plan(true)
+	elif ai_plan_age > AI_REPLAN_MAX_AGE:
+		ai_make_plan(false)
+ 
+# reroll = true picks a fresh shot; false keeps the previously chosen bounce count if it's still possible,
+# so the AI doesn't flip between shots every refresh.
+func ai_make_plan(reroll: bool) -> void:
+	var prev_bounces: int = int(ai_chosen.get("bounces", -1))
+	ai_path = ai_predict_puck()
+	ai_shots = ai_generate_shots(ai_path)
+	ai_plan_age = 0.0
+	var keep: Dictionary = {}
+	if not reroll and prev_bounces >= 0:
+		for sh in ai_shots:
+			if sh["bounces"] == prev_bounces:
+				keep = sh
+				break
+	ai_chosen = keep if not keep.is_empty() else ai_pick_shot(ai_shots, ai_difficulty)
+	if is_instance_valid(ai_debug_draw):
+		ai_debug_draw.show_plan(ai_path, ai_shots, ai_chosen, mallet_radius, puck_radius)
+ 
+# --------------------------------------------------------------------------
+# 1. PUCK PREDICTION: simulate the puck forward, bouncing off the side and end walls
+# --------------------------------------------------------------------------
+const AI_VALIDATE_TIME: float = 3.0         # how long a candidate shot is played forward (seconds)
+const AI_MAX_VALIDATION_FAILS: int = 3      # failed checks per bank type before giving up on it (keeps it fast)
+ 
+# The four corner arcs: center, which way is "into the table", and how far the puck's CENTER may go from the center
+func ai_corner_list() -> Array:
+	var list: Array = []
+	var s := get_viewport_rect().size
+	for is_p1: bool in [false, true]:
+		var r: float = corner_r_of(is_p1)
+		if r < 6.0 or r - puck_radius <= 0.0: continue
+		var sy: float = -1.0 if is_p1 else 1.0
+		var cy: float = (s.y - goal_depth - r) if is_p1 else (goal_depth + r)
+		for sx: float in [1.0, -1.0]:
+			list.append({"c": Vector2(r if sx > 0.0 else s.x - r, cy), "sx": sx, "sy": sy, "reach": r - puck_radius})
+	return list
+ 
+# Plays a puck forward from a position and velocity. Returns:
+#   "samples": [{t, pos, vel}, ...]   one per 1/60 s
+#   "goal":    0 = no goal, 1 = went into the top goal, 2 = went into the bottom goal
+func ai_simulate_puck(start_pos: Vector2, start_vel: Vector2, duration: float) -> Dictionary:
+	var samples: Array = []
+	var s := get_viewport_rect().size
+	var cx: float = s.x / 2.0
+	var x_min: float = puck_radius
+	var x_max: float = s.x - puck_radius
+	var y_min: float = goal_depth + puck_radius
+	var y_max: float = s.y - goal_depth - puck_radius
+	var half_top: float = goal_width_of(false) / 2.0 - puck_radius
+	var half_bot: float = goal_width_of(true) / 2.0 - puck_radius
+	# The puck's damping is its own value PLUS the project default (damp mode is "combine")
+	var damp: float = puck.linear_damp + float(ProjectSettings.get_setting("physics/2d/default_linear_damp", 0.1))
+	var corners: Array = ai_corner_list()
+	var pos: Vector2 = start_pos
+	var vel: Vector2 = start_vel
+	var t: float = 0.0
+	var goal: int = 0
+	while t <= duration:
+		samples.append({"t": t, "pos": pos, "vel": vel})
+		vel *= maxf(0.0, 1.0 - damp * AI_PREDICT_STEP)
+		pos += vel * AI_PREDICT_STEP
+		t += AI_PREDICT_STEP
+ 
+		# Rounded corners: inside a corner's quadrant the puck may not go beyond the arc
+		for cn in corners:
+			var c: Vector2 = cn["c"]
+			var d: Vector2 = pos - c
+			if d.x * float(cn["sx"]) < 0.0 and d.y * float(cn["sy"]) < 0.0 and d.length() > float(cn["reach"]):
+				var n: Vector2 = d.normalized()
+				pos = c + n * float(cn["reach"])
+				var vn: float = vel.dot(n)
+				if vn > 0.0:
+					vel -= (1.0 + puck_bounciness) * vn * n
+ 
+		# Straight side walls
+		if pos.x < x_min:
+			pos.x = 2.0 * x_min - pos.x
+			vel.x = absf(vel.x) * puck_bounciness
+		elif pos.x > x_max:
+			pos.x = 2.0 * x_max - pos.x
+			vel.x = -absf(vel.x) * puck_bounciness
+ 
+		# End walls, except where a goal opening lets the puck through
+		if pos.y < y_min:
+			if absf(pos.x - cx) < half_top:
+				if pos.y <= goal_depth:
+					goal = 1
+					break
+			else:
+				pos.y = 2.0 * y_min - pos.y
+				vel.y = absf(vel.y) * puck_bounciness
+		elif pos.y > y_max:
+			if absf(pos.x - cx) < half_bot:
+				if pos.y >= s.y - goal_depth:
+					goal = 2
+					break
+			else:
+				pos.y = 2.0 * y_max - pos.y
+				vel.y = -absf(vel.y) * puck_bounciness
+	return {"samples": samples, "goal": goal}
+ 
+# The predicted path of the puck as it is right now
+func ai_predict_puck() -> Array:
+	return ai_simulate_puck(puck.global_position, puck.linear_velocity, AI_PREDICT_TIME)["samples"]
+ 
+# Plays a shot forward from the strike point. True only if the puck really ends up in the OTHER player's goal.
+func ai_shot_scores(P: Vector2, d: Vector2, speed: float) -> bool:
+	var wanted: int = 1 if ai_is_p1 else 2   # the AI at the top (P2) scores in the bottom goal (2), and vice versa
+	var res: Dictionary = ai_simulate_puck(P, d * speed, AI_VALIDATE_TIME)
+	return int(res["goal"]) == wanted
+ 
+# --------------------------------------------------------------------------
+# 2. SHOT GENERATION
+# Mirror trick: unfold the table sideways. A shot with N bounces is a straight line from the
+# strike point to the N-th mirror image of the goal. Each image gives one candidate shot, and
+# for each we use the EARLIEST moment along the puck's path where the strike is physically possible.
+# --------------------------------------------------------------------------
+func ai_generate_shots(path: Array) -> Array:
+	var shots: Array = []
+	var rig: MalletRig = rig1 if ai_is_p1 else rig2
+	if rig == null or not is_instance_valid(rig.mallet) or path.is_empty(): return shots
+	var s := get_viewport_rect().size
+	var x_min: float = puck_radius
+	var L: float = s.x - puck_radius * 2.0            # width the puck's CENTER can travel across
+	if L <= 1.0: return shots
+	var m0: Vector2 = rig.mallet.global_position
+	var half_h: float = screen_height_half
+ 
+	# The AI shoots at the OTHER player's goal
+	var target_p1_goal: bool = not ai_is_p1
+	var goal_y: float = (s.y - goal_depth) if target_p1_goal else goal_depth
+	var safe_half: float = maxf(0.0, goal_width_of(target_p1_goal) / 2.0 - puck_radius - AI_GOAL_MARGIN)
+	var aim_x: float = s.x / 2.0 + randf_range(-1.0, 1.0) * safe_half * AI_AIM_SPREAD
+	var u_t: float = aim_x - x_min                    # goal position measured from the left wall
+ 
+	# Corner curves: a bank that touches a wall inside the curved zone would go wrong, so reject those
+	var r_top: float = corner_r_of(false) if corner_r_of(false) >= 6.0 else 0.0
+	var r_bot: float = corner_r_of(true) if corner_r_of(true) >= 6.0 else 0.0
+	var zone_top: float = goal_depth + r_top + puck_radius
+	var zone_bot: float = s.y - goal_depth - r_bot - puck_radius
+ 
+	# Every mirror image of the goal, tagged by how many walls the line to it crosses
+	var images: Array[float] = []
+	for j in range(-3, 4):
+		images.append(2.0 * j * L + u_t)
+		images.append(2.0 * j * L - u_t)
+ 
+	for u_img: float in images:
+		var bounces: int = absi(floori(u_img / L))
+		if bounces > AI_MAX_BOUNCES: continue
+		var a_pt := Vector2(x_min + u_img, goal_y)    # the image of the goal, in unfolded space
+		var fails: int = 0
+		for smp in path:
+			var t: float = smp["t"]
+			if t < AI_MIN_LEAD_TIME: continue
+			var P: Vector2 = smp["pos"]
+			# The puck has to be on the AI's half to be struck
+			if ai_is_p1 and P.y < half_h: continue
+			if not ai_is_p1 and P.y > half_h: continue
+			# The shot must head toward the goal
+			var fwd: float = (goal_y - P.y) * (1.0 if target_p1_goal else -1.0)
+			if fwd < 40.0: continue
+			var d: Vector2 = (a_pt - P).normalized()
+ 
+			# Where the line meets the side walls (also used for drawing)
+			var u_s: float = clampf(P.x - x_min, 0.0, L)
+			var pts: Array[Vector2] = [P]
+			var blocked: bool = false
+			if bounces > 0:
+				var ks: Array = []
+				if u_img > u_s:
+					ks = range(1, floori(u_img / L) + 1)
+				else:
+					ks = range(0, ceili(u_img / L) - 1, -1)
+				for k: int in ks:
+					var frac: float = (float(k) * L - u_s) / (u_img - u_s)
+					var by: float = P.y + frac * (a_pt.y - P.y)
+					var bx: float = x_min if posmod(k, 2) == 0 else x_min + L
+					if by < zone_top or by > zone_bot: blocked = true
+					pts.append(Vector2(bx, by))
+			if blocked: continue
+			pts.append(Vector2(aim_x, goal_y))
+ 
+			# Is your mallet sitting on this shot's path?
+			var clearance: float = INF
+			var opp: RigidBody2D = ai_opponent_mallet()
+			if is_instance_valid(opp):
+				clearance = ai_path_clearance(pts, opp.global_position)
+				if clearance < mallet_radius + puck_radius + AI_BLOCK_MARGIN: continue
+			
+			var strike: Dictionary = ai_solve_strike(P, smp["vel"], d, m0, t, path)
+			if strike.is_empty(): continue
+			# Check with the real geometry that this shot actually scores
+			if not ai_shot_scores(P, d, strike["shot_speed"]):
+				fails += 1
+				if fails >= AI_MAX_VALIDATION_FAILS: break
+				continue
+			strike["id"] = shots.size()
+			strike["clearance"] = clearance
+			strike["bounces"] = bounces
+			strike["t"] = t
+			strike["puck_pos"] = P
+			strike["points"] = pts
+			shots.append(strike)
+			break   # earliest workable strike for this image is enough
+	return shots
+ 
+# Works out how the mallet must hit the puck at point P (puck velocity pv) so the puck leaves along d.
+# Hit physics: the contact surface is a straight line, so only the velocity ALONG the contact normal n
+# changes; the puck's sideways speed is kept. With mallet mass M and puck mass m:
+#     new_puck_velocity = pv + a * (v_mallet_n - pv.n) * n,    a = 2M / (M + m)
+# We want new_puck_velocity = shot_speed * d, which fixes n, and then the needed mallet speed.
+# (Assumes the mallet's bounce is high enough that the combined bounce is 1, which it is: SLIDE_BOUNCE.)
+func ai_solve_strike(P: Vector2, pv: Vector2, d: Vector2, m0: Vector2, t: float, path: Array) -> Dictionary:
+	var a: float = 2.0 * MALLET_MASS / (MALLET_MASS + puck.mass)
+	var top_speed: float = minf(AI_SHOT_SPEED, puck_max_speed * 0.9)
+
+	
+	for speed_mult: float in [1.0, 0.75, 0.5]:
+		var want: Vector2 = d * (top_speed * speed_mult) - pv
+		var k: float = want.length()
+		if k < 1.0: continue
+		var n: Vector2 = want / k                      # direction from the mallet's center to the puck's center
+		var v_mn: float = pv.dot(n) + k / a            # mallet speed along n needed at contact
+		if v_mn < 0.0 or v_mn > AI_MAX_STRIKE_SPEED: continue
+ 
+		var strike_pos: Vector2 = P - n * (mallet_radius + puck_radius)
+		var clamped: Vector2 = bound_mallet_position(strike_pos, ai_is_p1)
+		if clamped.distance_to(strike_pos) > 3.0: continue   # mallet can't legally stand there
+ 
+		var windup: Vector2 = bound_mallet_position(strike_pos - n * AI_RUNUP, ai_is_p1)
+		var runup: float = windup.distance_to(strike_pos)
+		var need: float = m0.distance_to(windup) / AI_REACH_SPEED + runup / maxf(v_mn * 0.5, 150.0)
+		if need > t: continue                           # can't get there in time
+ 
+		return {
+			"mallet_pos": strike_pos,
+			"windup": windup,
+			"normal": n,
+			"mallet_speed": v_mn,
+			"shot_speed": top_speed * speed_mult,
+		}
+	return {}
+ 
+# --------------------------------------------------------------------------
+# 3. SHOT CHOICE: weighted random by bounce count
+# --------------------------------------------------------------------------
+func ai_pick_shot(shots: Array, difficulty: String) -> Dictionary:
+	if shots.is_empty(): return {}
+	var table: Array = SHOT_WEIGHTS[difficulty]
+	var tier_count: Dictionary = {}
+	for sh in shots:
+		var tier: int = mini(sh["bounces"], table.size() - 1)
+		tier_count[tier] = int(tier_count.get(tier, 0)) + 1
+	var weights: Array[float] = []
+	var total: float = 0.0
+	for sh in shots:
+		var tier: int = mini(sh["bounces"], table.size() - 1)
+		var w: float = float(table[tier]) / float(tier_count[tier])
+		var clear_factor: float = lerpf(0.25, 1.0, clampf(float(sh["clearance"]) / AI_CLEAR_FULL, 0.0, 1.0))
+		w *= lerpf(1.0, clear_factor, ai_awareness)
+		weights.append(w)
+		total += w
+	var roll: float = randf() * total
+	for i in range(shots.size()):
+		roll -= weights[i]
+		if roll <= 0.0: return shots[i]
+	return shots[shots.size() - 1]
+ 
+ 
+# ==========================================================================
+# DEBUG VIEW (put with the other inner classes)
+# ==========================================================================
+class AIDebugDraw extends Node2D:
+	const TIER_COLORS: Array[Color] = [
+		Color(0.2, 1.0, 0.3), Color(1.0, 0.95, 0.2), Color(1.0, 0.6, 0.1),
+		Color(1.0, 0.25, 0.2), Color(1.0, 0.2, 0.9)]
+	var path: Array = []
+	var shots: Array = []
+	var chosen: Dictionary = {}
+	var mallet_r: float = 40.0
+	var puck_r: float = 30.0
+ 
+	func show_plan(p: Array, s: Array, c: Dictionary, mr: float, pr: float) -> void:
+		path = p
+		shots = s
+		chosen = c
+		mallet_r = mr
+		puck_r = pr
+		queue_redraw()
+ 
+	func clear() -> void:
+		path = []
+		shots = []
+		chosen = {}
+		queue_redraw()
+ 
+	func _draw() -> void:
+		if path.size() > 1:
+			var pp := PackedVector2Array()
+			for smp in path: pp.append(smp["pos"])
+			draw_polyline(pp, Color(1, 1, 1, 0.35), 2.0)
+		var chosen_id: int = int(chosen.get("id", -1))
+		var font: Font = ThemeDB.fallback_font
+		for sh in shots:
+			var col: Color = TIER_COLORS[mini(sh["bounces"], TIER_COLORS.size() - 1)]
+			var is_chosen: bool = sh["id"] == chosen_id
+			var pts := PackedVector2Array(sh["points"])
+			draw_polyline(pts, Color(col, 1.0 if is_chosen else 0.4), 5.0 if is_chosen else 2.0)
+			draw_string(font, pts[0] + Vector2(8, -8), str(sh["bounces"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 20, col)
+			if is_chosen:
+				draw_arc(sh["puck_pos"], puck_r, 0.0, TAU, 32, col, 3.0)             # puck at the strike
+				draw_arc(sh["mallet_pos"], mallet_r, 0.0, TAU, 32, col, 3.0)         # mallet at the strike
+				draw_dashed_line(sh["windup"], sh["mallet_pos"], col, 3.0, 10.0)     # mallet's run-up
+
+# --- AI CONTROLLER TUNING ---
+const AI_ACCEL: float = 7000.0              # how quickly the mallet can speed up / slow down when repositioning (px/sec^2)
+var AI_DEFEND_SPEED: float = 1600.0       # top speed while defending
+const AI_HOME_DEPTH: float = 110.0          # how far in front of its goal the AI waits
+var AI_HOME_TRACK: float = 0.7            # 0 = sits dead center, 1 = follows the puck's x exactly
+const AI_SAVE_MARGIN: float = 0.4          # if the puck will score, don't attack unless the hit lands this much sooner
+const AI_THREAT_DEFEND_TIME: float = 1.5    # puck scoring within this many seconds = defend, don't attack
+const AI_STRIKE_ACCEL_MAX: float = 25000.0  # strongest acceleration along a strike
+const AI_FOLLOW_THROUGH: float = 0.08       # seconds the mallet keeps its speed after the planned contact
+const AI_STRIKE_COOLDOWN: float = 0.25      # pause after a strike (or a missed chance) before attacking again
+const AI_ARRIVE_TOLERANCE: float = 14.0     # how close to the wind-up point counts as "there"
+const AI_LATE_ABORT: float = 0.5            # give up on a shot if less than this fraction of the strike time is left
+const AI_SLOW_PUCK_SPEED: float = 120.0     # a puck slower than this is treated as sitting still (strike when ready)
+const AI_HOLD_SPEED: float = 150.0          # shots needing less mallet speed than this are "stand there and deflect"
+ 
+# --- AI CONTROLLER STATE ---
+enum AIState { HOME, WINDUP, STRIKE }
+var ai_enabled: bool = false
+var ai_state: int = AIState.HOME
+var ai_vel: Vector2 = Vector2.ZERO        # the velocity the AI is commanding
+var ai_strike: Dictionary = {}            # the strike in progress: dir, accel, duration, elapsed
+var ai_cooldown: float = 0.0
+var ai_fallback: Dictionary = {}          # simple clearing shot, used when the planner finds nothing
+var ai_last_age: float = 99.0             # lets the controller notice when a new plan was made
+ 
+func ai_reset_controller() -> void:
+	ai_state = AIState.HOME
+	ai_vel = Vector2.ZERO
+	ai_strike = {}
+	ai_cooldown = 0.0
+	ai_fallback = {}
+	ai_last_age = 99.0
+ 
+# The AI "grabs" its mallet exactly like a finger would, minus the touch index
+func ai_grab(rig: MalletRig) -> void:
+	rig.gripped = true
+	rig.target = rig.mallet.global_position
+	rig.mallet.freeze = false
+	rig.mallet.linear_damp = 0.0
+	rig.last_pos = rig.mallet.global_position
+	rig.flick_vel = Vector2.ZERO
+	ai_vel = Vector2.ZERO
+ 
+# --------------------------------------------------------------------------
+# MAIN CONTROL: runs every physics frame, before drive_rig
+# --------------------------------------------------------------------------
+func ai_control(delta: float) -> void:
+	if not ai_enabled or delta <= 0.0 or not is_instance_valid(puck): return
+	var rig: MalletRig = rig1 if ai_is_p1 else rig2
+	if rig == null or not is_instance_valid(rig.mallet): return
+	if not rig.gripped:
+		ai_grab(rig)   # first frame, or the first frame after a pause
+	ai_cooldown = maxf(0.0, ai_cooldown - delta)
+	var m: RigidBody2D = rig.mallet
+	# If a collision changed the mallet's real velocity, trust that over our own bookkeeping
+	if (ai_vel - m.linear_velocity).length() > 400.0:
+		ai_vel = m.linear_velocity
+ 
+	# Mid-strike: it's committed, just run it
+	if ai_state == AIState.STRIKE:
+		ai_run_strike(rig, delta)
+		return
+ 
+	var threat_t: float = ai_goal_threat_time()
+	var shot: Dictionary = ai_current_shot(threat_t)
+ 
+	# Nothing worth attacking (or still cooling down): defend
+	if shot.is_empty() or ai_cooldown > 0.0:
+		ai_state = AIState.HOME
+		ai_move_toward(rig, ai_defend_target(), AI_DEFEND_SPEED, delta)
+		return
+ 
+	# Attack: get to the wind-up point, then launch so contact lands on time
+	ai_state = AIState.WINDUP
+	var params: Dictionary = ai_strike_params(shot)
+	var duration: float = params["duration"]
+	var remaining: float = float(shot["t"]) - ai_plan_age
+	var slow_puck: bool = puck.linear_velocity.length() < AI_SLOW_PUCK_SPEED
+ 
+	if not slow_puck and remaining < duration * AI_LATE_ABORT:
+		ai_cooldown = AI_STRIKE_COOLDOWN   # too late for this one; defend, then look again
+		ai_state = AIState.HOME
+		return
+ 
+	# "Hold" shots: the puck is coming fast and only needs a solid mallet at the right spot
+	if params["hold"]:
+		ai_move_toward(rig, shot["mallet_pos"], AI_REACH_SPEED, delta)
+		return
+ 
+	var windup: Vector2 = shot["windup"]
+	var arrived: bool = m.global_position.distance_to(windup) < AI_ARRIVE_TOLERANCE and m.linear_velocity.length() < 200.0
+	if arrived and (slow_puck or remaining <= duration):
+		ai_begin_strike(params)
+		ai_run_strike(rig, delta)
+		return
+	ai_move_toward(rig, windup, AI_REACH_SPEED, delta)
+ 
+# --------------------------------------------------------------------------
+# MOVEMENT HELPERS
+# --------------------------------------------------------------------------
+# drive_rig turns (target - position) / delta into velocity, so target = position + v * delta commands v
+func ai_apply_velocity(rig: MalletRig, v: Vector2, delta: float) -> void:
+	rig.target = bound_mallet_position(rig.mallet.global_position + v * delta, ai_is_p1)
+ 
+# Smooth move to a point: speeds up with AI_ACCEL, brakes early so it arrives without overshooting
+func ai_move_toward(rig: MalletRig, dest: Vector2, max_speed: float, delta: float) -> void:
+	var to: Vector2 = dest - rig.mallet.global_position
+	var dist: float = to.length()
+	var desired: Vector2 = Vector2.ZERO
+	if dist > 0.5:
+		var speed: float = minf(max_speed, sqrt(2.0 * AI_ACCEL * dist) * 0.8)
+		speed = minf(speed, dist / delta)   # never overshoot within a single frame
+		desired = to / dist * speed
+	ai_vel = ai_vel.move_toward(desired, AI_ACCEL * delta)
+	ai_apply_velocity(rig, ai_vel, delta)
+ 
+# --------------------------------------------------------------------------
+# STRIKE: start from rest at the wind-up point and accelerate evenly so the mallet reaches the planned
+# contact speed exactly at the strike point (the planner assumed this: average speed = half the final speed)
+# --------------------------------------------------------------------------
+func ai_strike_params(shot: Dictionary) -> Dictionary:
+	var start: Vector2 = shot["windup"]
+	var end: Vector2 = shot["mallet_pos"]
+	var dir: Vector2 = shot["normal"]
+	if start.distance_to(end) > 1.0:
+		dir = (end - start).normalized()   # the wind-up point may have been pushed off the ideal line by a wall
+	var runup: float = maxf(start.distance_to(end), 20.0)
+	var v: float = shot["mallet_speed"]
+	var acc: float = clampf(v * v / (2.0 * runup), 500.0, AI_STRIKE_ACCEL_MAX)
+	return {
+		"dir": dir,
+		"accel": acc,
+		"duration": sqrt(2.0 * runup / acc),
+		"hold": v < AI_HOLD_SPEED,
+	}
+ 
+func ai_begin_strike(params: Dictionary) -> void:
+	ai_strike = params.duplicate()
+	ai_strike["elapsed"] = 0.0
+	ai_vel = Vector2.ZERO
+	ai_state = AIState.STRIKE
+ 
+func ai_run_strike(rig: MalletRig, delta: float) -> void:
+	if float(ai_strike["elapsed"]) < float(ai_strike["duration"]) and ai_goal_threat_time() < AI_THREAT_DEFEND_TIME:
+		ai_state = AIState.HOME
+		ai_cooldown = 0.0
+		ai_move_toward(rig, ai_defend_target(), AI_DEFEND_SPEED, delta)
+		return
+	ai_strike["elapsed"] = float(ai_strike["elapsed"]) + delta
+	var el: float = ai_strike["elapsed"]
+	var dur: float = ai_strike["duration"]
+	var dir: Vector2 = ai_strike["dir"]
+	ai_vel = dir * float(ai_strike["accel"]) * minf(el, dur)
+	ai_apply_velocity(rig, ai_vel, delta)
+	if el >= dur + AI_FOLLOW_THROUGH:
+		ai_state = AIState.HOME
+		ai_cooldown = AI_STRIKE_COOLDOWN
+ 
+# --------------------------------------------------------------------------
+# DEFENSE
+# --------------------------------------------------------------------------
+# Time until the predicted puck scores in the AI's own goal, or INF if it won't
+func ai_goal_threat_time() -> float:
+	if ai_path.is_empty(): return INF
+	var last: Dictionary = ai_path[ai_path.size() - 1]
+	# The prediction only stops early when the puck goes into a goal
+	if float(last["t"]) >= AI_PREDICT_TIME - AI_PREDICT_STEP * 2.0: return INF
+	var lp: Vector2 = last["pos"]
+	var in_my_goal: bool = (lp.y > screen_height_half) if ai_is_p1 else (lp.y < screen_height_half)
+	return float(last["t"]) if in_my_goal else INF
+ 
+# Where the mallet waits: a line in front of its own goal, at the x where the puck is predicted to cross it,
+# or (if the puck isn't coming) leaning toward the puck's x
+# ==========================================================================
+ 
+# Where the mallet waits / blocks. "front" is the direction from the AI's goal out into the court
+# (+y for the top player, -y for the bottom player), so the same code works for either side.
+func ai_defend_target() -> Vector2:
+	var s := get_viewport_rect().size
+	var cx: float = s.x / 2.0
+	var front: float = -1.0 if ai_is_p1 else 1.0
+	var goal_line_y: float = (s.y - goal_depth) if ai_is_p1 else goal_depth
+	var home_depth: float = mallet_radius + AI_HOME_DEPTH   # normal waiting line
+	var deep_depth: float = mallet_radius + 4.0             # deepest legal spot, right in front of the goal
+	var x: float = cx
+	var depth: float = home_depth
+	if puck_live and is_instance_valid(puck):
+		x = lerpf(cx, puck.global_position.x, AI_HOME_TRACK)
+		# The puck already slipped past the waiting line: stand in front of the goal instead
+		var puck_depth: float = (puck.global_position.y - goal_line_y) * front
+		if puck_depth < home_depth:
+			depth = deep_depth
+		# Where will the puck cross our line, if it's heading for the goal?
+		var line_y: float = goal_line_y + front * depth
+		for smp in ai_path:
+			var pp: Vector2 = smp["pos"]
+			var pv: Vector2 = smp["vel"]
+			if (pp.y - line_y) * front <= 0.0 and pv.y * front < 0.0:
+				x = pp.x
+				break
+	var target := Vector2(x, goal_line_y + front * depth)
+	target = ai_avoid_puck_path(target)
+	return bound_mallet_position(target, ai_is_p1)
+ 
+# The puck can go around the mallet, bounce off the end wall and come back. A mallet standing in that
+# return path would knock it straight into its own goal, so try spots to either side instead.
+func ai_avoid_puck_path(target: Vector2) -> Vector2:
+	var front: float = -1.0 if ai_is_p1 else 1.0
+	var clear: float = mallet_radius + puck_radius + 12.0
+	for off: float in [0.0, 1.0, -1.0, 2.0, -2.0]:
+		var cand: Vector2 = bound_mallet_position(Vector2(target.x + off * clear, target.y), ai_is_p1)
+		if not ai_hit_from_behind(cand, front, clear):
+			return cand
+	return target
+ 
+# Does the predicted puck first touch this spot from the goal side (the dangerous direction)?
+func ai_hit_from_behind(spot: Vector2, front: float, clear: float) -> bool:
+	for smp in ai_path:
+		var pp: Vector2 = smp["pos"]
+		if pp.distance_to(spot) < clear:
+			return (pp.y - spot.y) * front < -clear * 0.35
+	return false
+ 
+ 
+# --------------------------------------------------------------------------
+# CHOOSING WHAT TO ATTACK
+# --------------------------------------------------------------------------
+# The planner's pick, else a simple clearing shot. Returns {} if the AI should just defend.
+func ai_current_shot(threat_t: float) -> Dictionary:
+	# A new plan was just made (the planner resets ai_plan_age): refresh the fallback shot once
+	if ai_plan_age < ai_last_age:
+		ai_fallback = {} if not ai_chosen.is_empty() else ai_make_fallback()
+	ai_last_age = ai_plan_age
+	var shot: Dictionary = ai_chosen if not ai_chosen.is_empty() else ai_fallback
+	if shot.is_empty(): return shot
+	if threat_t < AI_THREAT_DEFEND_TIME: return {}
+	# If the puck is about to score, only go for the hit if it lands comfortably before that
+	if threat_t < INF and float(shot["t"]) > threat_t - AI_SAVE_MARGIN: return {}
+	return shot
+ 
+# When every real shot is blocked or unreachable: still clear the puck, aimed at the side of the
+# opponent's end that's farthest from their mallet. Uses the same strike solver, so it's still reachable.
+func ai_make_fallback() -> Dictionary:
+	var rig: MalletRig = rig1 if ai_is_p1 else rig2
+	if ai_path.is_empty() or rig == null or not is_instance_valid(rig.mallet): return {}
+	var s := get_viewport_rect().size
+	var target_p1_goal: bool = not ai_is_p1
+	var goal_y: float = (s.y - goal_depth) if target_p1_goal else goal_depth
+	var side: float = 1.0
+	var opp: RigidBody2D = ai_opponent_mallet()
+	if is_instance_valid(opp):
+		side = -1.0 if opp.global_position.x > s.x / 2.0 else 1.0
+	var aim := Vector2(s.x / 2.0 + side * goal_width_of(target_p1_goal) * 0.3, goal_y)
+	var m0: Vector2 = rig.mallet.global_position
+	for smp in ai_path:
+		var t: float = smp["t"]
+		if t < AI_MIN_LEAD_TIME: continue
+		var P: Vector2 = smp["pos"]
+		if ai_is_p1 and P.y < screen_height_half: continue
+		if not ai_is_p1 and P.y > screen_height_half: continue
+		var strike: Dictionary = ai_solve_strike(P, smp["vel"], (aim - P).normalized(), m0, t, ai_path)
+		if strike.is_empty(): continue
+		strike["id"] = 0
+		strike["bounces"] = 0
+		strike["t"] = t
+		strike["puck_pos"] = P
+		strike["points"] = [P, aim]
+		strike["clearance"] = 0.0
+		if is_instance_valid(ai_debug_draw):
+			ai_debug_draw.show_plan(ai_path, [strike], strike, mallet_radius, puck_radius)
+		return strike
+	return {}
+
+# --- OPPONENT SETTINGS ---
+var ai_level: int = 1          # 0 = Easy, 1 = Medium, 2 = Hard (saved)
+var btn_opponent: Button
+ 
+# Each level sets all the AI's knobs at once. Tune these numbers by playtesting.
+#   weights     which row of SHOT_WEIGHTS to use (how often it picks bank shots)
+#   reach       how fast it repositions for a strike (px/sec)
+#   defend      how fast it moves while defending (px/sec)
+#   react       delay before it starts moving toward a strike (seconds)
+#   awareness   how much it prefers shots that stay away from your mallet (0..1)
+#   shot_speed  how hard it hits the puck (px/sec)
+#   home_track  how closely its defense follows the puck's x (0..1)
+const AI_LEVELS: Array = [
+	{"name": "Easy",   "weights": "easy",   "reach": 600.0,  "defend": 900.0,  "react": 0.4, "awareness": 0.2, "shot_speed": 600.0,  "home_track": 0.5},
+	{"name": "Medium", "weights": "medium", "reach": 1100.0,  "defend": 1100.0, "react": 0.25, "awareness": 0.6, "shot_speed": 1100.0, "home_track": 0.65},
+	{"name": "Hard",   "weights": "hard",   "reach": 1700.0, "defend": 1700.0, "react": 0.10, "awareness": 1.0, "shot_speed": 1700.0, "home_track": 0.8},
+]
+ 
+# Copies the chosen level's numbers into the live AI settings
+func apply_ai_level() -> void:
+	ai_level = clampi(ai_level, 0, AI_LEVELS.size() - 1)
+	var lv: Dictionary = AI_LEVELS[ai_level]
+	ai_difficulty = lv["weights"]
+	AI_REACH_SPEED = float(lv["reach"])
+	AI_DEFEND_SPEED = float(lv["defend"])
+	AI_REACT_TIME = float(lv["react"])
+	ai_awareness = float(lv["awareness"])
+	AI_SHOT_SPEED = float(lv["shot_speed"])
+	AI_HOME_TRACK = float(lv["home_track"])
+ 
+# Applies everything about the opponent to a running game (used by the button and by Reset to Defaults)
+func apply_ai_settings() -> void:
+	apply_ai_level()
+	if not ai_enabled:
+		# Hand the mallet back: it goes solid and a finger can grab it again
+		stop_rig(rig1 if ai_is_p1 else rig2)
+	ai_clear_plan()   # also resets the controller, so it starts fresh with the new level
+	refresh_opponent_button()
+ 
+func cycle_opponent() -> void:
+	if not ai_enabled:
+		ai_enabled = true
+		ai_level = 0
+	elif ai_level < AI_LEVELS.size() - 1:
+		ai_level += 1
+	else:
+		ai_enabled = false
+	apply_ai_settings()
+	save_options()   # remembered next launch, no need to visit Options
+ 
+func refresh_opponent_button() -> void:
+	if not is_instance_valid(btn_opponent): return
+	if ai_enabled:
+		btn_opponent.text = "vs Computer: %s" % AI_LEVELS[clampi(ai_level, 0, AI_LEVELS.size() - 1)]["name"]
+	else:
+		btn_opponent.text = "2 Players"
+ 

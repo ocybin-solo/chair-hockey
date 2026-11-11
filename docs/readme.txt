@@ -2,7 +2,7 @@
 Licensed under GNU GPL v3, see License
 
 
-[color=#2ed573][b]Player 1[/b][/color] plays the bottom half, [color=#1e90ff][b]Player 2[/b][/color] the top ....Or, a single [color=#3ed333][b]Amazing Person[/b][/color] plays both sides at same time using various body parts
+[color=#2ed573][b]Player 1[/b][/color] plays the bottom half, [color=#1e90ff][b]Player 2[/b][/color] the top ....Or, [color=#3ed666][b]the computer[/b][/color] plays the top against you.
 
 [b]How to play[/b]
 
@@ -15,5 +15,7 @@ Check Options to customize[/ul]
 
 [b]Credits[/b]
 Created by ocybin-solo, with coding help from [color=#2ed573][b]Gemini AI[/b][/color] as well as [color=#1e90ff][b]Claude AI[/b][/color]
+
+sounds : (goal sound) GMB Kantilan 9.WAV by anamorphosis -- https://freesound.org/s/24629/ -- License: Sampling+
 
 To donate to my coffee & cigarettes consumption, please send pocket change to @boxel on VENMO - THANK YOU!! 
